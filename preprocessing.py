@@ -19,7 +19,7 @@ import netCDF4 as nc
 from scipy.io import netcdf as scipy_nc
 import time
 from dateutil.relativedelta import relativedelta
-from rpy2.robjects import r,FloatVector
+#from rpy2.robjects import r,FloatVector
 from osgeo import ogr,osr
 import gc
 #import sparse
@@ -432,7 +432,7 @@ def Create_Other_Soil_Properties(cdb,workspace,metadata,icatch,log,properties):
 
 def Texture_Class(clay,silt,sand,om):
  
- r('library("soiltexture")')
+ #r('library("soiltexture")')
 
  #Ensure sand/silt/clay add up to 100
  m = (sand != -9999) | (clay != -9999) | (silt != -9999) | (om != -9999)
@@ -444,7 +444,7 @@ def Texture_Class(clay,silt,sand,om):
  oc = 0.58*om*(1000/100.) # OC=0.58*OM [g/kg]
  shape = sand.shape
 
- #Pass to R
+ '''#Pass to R
  r.assign('clay',FloatVector(clay[m]))
  r.assign('sand',FloatVector(sand[m]))
  r.assign('silt',FloatVector(silt[m]))
@@ -488,11 +488,12 @@ def Texture_Class(clay,silt,sand,om):
  soil_texture  = mapping[mask]
  texture = np.ones(shape)
  texture[:] = -9999.0
- texture[m] = soil_texture
+ texture[m] = soil_texture'''
+ texture = pedotransfer.compute_soil_texture_class(sand,clay)
  #Set -9999 to Loam
  texture[texture == -9999] = 6
 
- del output, mask, soil_texture; gc.collect()
+ #del output, mask, soil_texture; gc.collect()
  return texture
 
 def domain_decomposition(md):
@@ -769,17 +770,6 @@ def Correct_Mask(cdb,workspace,metadata,icatch,log,eares):
    #if (b == -9999):continue
    #if (r != -9999):count[r,b-1] += 1
    count[r,b-1] += 1
- #If channel count in cell is 0, then remove from being a candidate
- #print(workspace,np.sum(count[count > 0]))
- #count[channel_count == 0] = 0 #HERE
- #print(workspace,np.sum(count[count > 0]))
- #If part of basin is outside of domain, then remove from being a candidate basin
- #count[:,basin_external == 0] = 0
- #tmp = np.sum(channel_count,axis=0)
- #print(tmp)
- #print(np.sum(tmp == 0))
- #print(np.sum(tmp != 0))
- #exit()
  #Find the basins that have the largest representation in the given cell or catchment
  #idx = np.where(ucatchs == cdb['cid'])[0][0]
  argmax = np.argmax(count,axis=0)
@@ -801,11 +791,6 @@ def Correct_Mask(cdb,workspace,metadata,icatch,log,eares):
  mask = gdal_tools.read_data('%s/mask_latlon.tif' % workspace)
  mask.data = mask_v2
  mask.write_data('%s/mask_latlon.tif' % workspace)
- '''import matplotlib.pyplot as plt
- mask_v2 = np.ma.masked_array(mask_v2,mask_v2==-9999)
- plt.imshow(mask_v2)
- plt.show()
- exit()'''
 
  gc.collect()
  
@@ -1117,7 +1102,6 @@ def Extract_Irrigation_Map(cdb,workspace,metadata,icatch,log):
 
 def Extract_Land_Cover(cdb,workspace,metadata,icatch,log):
 
-
  #0. Get the parameters
  md = gdal_tools.retrieve_metadata('%s/mask_latlon.tif' % workspace)
  minx = md['minx']
@@ -1136,7 +1120,6 @@ def Extract_Land_Cover(cdb,workspace,metadata,icatch,log):
  data = gdal_tools.read_raster(lc_latlon_file)
 
  #0.5. Map to final 
- #lcs = np.unique(data)[1:]
  lcs = np.unique(data)[:]
  tmp = np.copy(data)
  for lc in lcs:
@@ -1259,7 +1242,6 @@ def Extract_Soils(cdb,workspace,metadata,icatch,log):
    md = gdal_tools.retrieve_metadata(file_out)
    md['nodata'] = -9999.0
    gdal_tools.write_raster(file_out,md,properties[var])
- #exit()
 
  #Create the missing properties
  if metadata['soil_database'] == 'conus-soil':
@@ -1305,12 +1287,8 @@ def Extract_Meteorology(cdb,workspace,metadata,icatch,log):
   file = file.replace('$YEAR',str(startdate.year))
   file = file.replace('$MTH','%02d' % startdate.month)
   fp = nc.Dataset(file,'r')
-  #lats = fp.variables['latitude'][:]
-  #lons = fp.variables['longitude'][:]
   lats = fp.variables['lat'][:]
   lons = fp.variables['lon'][:]
-  #lats = fp.variables['y'][:]
-  #lons = fp.variables['x'][:]
   undef = fp.variables[var_name]._FillValue
   fp.close()
   del fp
@@ -1343,7 +1321,6 @@ def Extract_Meteorology(cdb,workspace,metadata,icatch,log):
 
   #Read in data and create local copy
   date = startdate
-  #dt = relativedelta(years=1)
   dt = relativedelta(months=1)
   tstep = metadata['meteo']['tstep']
   nts = int(((enddate-startdate).days+1)*(24/int(tstep.split('h')[0])))
@@ -1356,9 +1333,6 @@ def Extract_Meteorology(cdb,workspace,metadata,icatch,log):
    file = file.replace('$YEAR',str(date.year))
    file = file.replace('$MTH','%02d' % date.month)  
    fp = nc.Dataset(file,'r')
-   #fobj = open(file,'rb')
-   #fp = nc.Dataset(fobj.name,memory=fobj.read())
-   #print file 
    tic = time.time()
    #Extract the data
    if date == startdate:
@@ -1366,13 +1340,11 @@ def Extract_Meteorology(cdb,workspace,metadata,icatch,log):
     it = 0
     ft = it+tmp.shape[0]
     data[it:ft,:,:]=tmp
-    #data = fp.variables[var_name][:,iminlat:imaxlat+1,iminlon:imaxlon+1]
    else:
     tmp = fp.variables[var_name][:,iminlat:imaxlat+1,iminlon:imaxlon+1]
     it = ft
     ft = it+tmp.shape[0]
     data[it:ft,:,:]=tmp
-    #data = np.append(data,fp.variables[var_name][:,iminlat:imaxlat+1,iminlon:imaxlon+1],axis=0)
    print(icatch,var,date,tmp.shape,time.time()-tic,flush=True)
 
    fp.close()
@@ -1499,8 +1471,6 @@ def Extract_Meteorology_Daily(cdb,workspace,metadata,icatch,log):
 
   #Read in data and create local copy
   date = startdate
-  #dt = relativedelta(years=1)
-  #dt = relativedelta(months=1)
   dt = relativedelta(days=1)
   tstep = metadata['meteo']['tstep']
   nts = int(((enddate-startdate).days+1)*(24/int(tstep.split('h')[0])))
@@ -1621,8 +1591,6 @@ def Extract_Water_Use(cdb,workspace,metadata,icatch,log):
   fp = nc.Dataset(file,'r')
   lats = fp.variables['latitude'][:]
   lons = fp.variables['longitude'][:]
-  #lats = fp.variables['y'][:]
-  #lons = fp.variables['x'][:]
   times = fp.variables['time']
   times_date = nc.num2date(times[:],units=times.units,calendar=times.calendar)
   undef = fp.variables[var_name]._FillValue
@@ -1642,7 +1610,6 @@ def Extract_Water_Use(cdb,workspace,metadata,icatch,log):
     flip_lon_flag = True
     print("Water Use Warning: Inversing Longitude...",flush=True)
   
-
   #Set up domain (with buffer)
   iminlat = np.argmin(np.abs(lats - cminlat)) - 1
   imaxlat = np.argmin(np.abs(lats - cmaxlat)) + 1
@@ -1656,16 +1623,11 @@ def Extract_Water_Use(cdb,workspace,metadata,icatch,log):
   maxlat = lats[imaxlat]
   minlon = lons[iminlon]
   maxlon = lons[imaxlon]
-  #resy = (lats[-1]-lats[0])/len(lats)
-  #resx = (lons[-1]-lons[0])/len(lons)
-  #res = (resx+resy)/2.
   res = (lats[-1]-lats[0])/len(lats)
 
-  
   #Determine the box size
   nlon = int(np.round((maxlon - minlon)/res +1 ))
   nlat = int(np.round((maxlat - minlat)/res +1 ))
-  #print nlat, nlon, res
    
   #Determine date range
   m = (times_date >= startdate) & (times_date <= enddate)
@@ -1678,7 +1640,6 @@ def Extract_Water_Use(cdb,workspace,metadata,icatch,log):
 
   #Read in data and create local copy
   date = startdate
-  #dt = relativedelta(years=1)
   dt = relativedelta(months=1)
   tstep = metadata['water_use']['tstep']
   tstep_val = {'3h':3,'24h':24,'daily':24,'day':24,'1h':1}
@@ -1694,28 +1655,18 @@ def Extract_Water_Use(cdb,workspace,metadata,icatch,log):
 
    #Extract the data
    if date == startdate:
-    #idata = fp.variables[var_name][:]
-    #if flip_lat_flag == True : idata = flip(idata,1)
-    #if flip_lon_flag == True : idata = flip(idata,2)
     idata = fp.variables[var_name][:,iminlat:imaxlat+1,iminlon:imaxlon+1]
     it = 0
     ft = it+idata.shape[0]
-    #data[it:ft,:,:] = idata[:,iminlat:imaxlat+1,iminlon:imaxlon+1]
     data[it:ft,:,:] = idata
     
    else:
-    #idata = fp.variables[var_name][:]
-    #if flip_lat_flag == True : idata = flip(idata,1)
-    #if flip_lon_flag == True : idata = flip(idata,2)
     idata = fp.variables[var_name][:,iminlat:imaxlat+1,iminlon:imaxlon+1]
     it = ft
     ft = it+idata.shape[0]
-    #data[it:ft,:,:] = idata[:,iminlat:imaxlat+1,iminlon:imaxlon+1]
     data[it:ft,:,:] = idata
 
    fp.close()
-   #del fp, idata
-   #gc.collect()
 
    #Update the time step
    date = date + dt
