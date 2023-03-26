@@ -20,7 +20,7 @@ from scipy.io import netcdf as scipy_nc
 import time
 from dateutil.relativedelta import relativedelta
 from rpy2.robjects import r,FloatVector
-import ogr,osr
+from osgeo import ogr,osr
 import gc
 #import sparse
 from scipy.sparse import csr_matrix, csc_matrix, find, hstack
@@ -591,7 +591,7 @@ def summarize_domain_decompisition(md):
  maxlon = md['boundaries']['maxlon']
 
  #Prepare the domain directory
- cdir = '%s/domain' % md['output_data']
+ cdir = '%s/cids' % md['output_data']
  os.system('rm -rf %s' % cdir)
  os.system('mkdir -p %s' % cdir)
 
@@ -600,7 +600,7 @@ def summarize_domain_decompisition(md):
  os.system('ogr2ogr -spat %.16f %.16f %.16f %.16f %s %s' % (minlon,minlat,maxlon,maxlat,file_out,file_in))
 
  #Open access to the database
- import ogr
+ from osgeo import ogr
  driver = ogr.GetDriverByName("ESRI Shapefile")
  ds = driver.Open(file_out,0)
 
@@ -619,7 +619,7 @@ def summarize_domain_decompisition(md):
  gc.collect()
 
  #Pickle the database
- pickle.dump(output,open('%s/domain/domain_database.pck' % md['output_data'],'wb'),pickle.HIGHEST_PROTOCOL)
+ pickle.dump(output,open('%s/cids/domain_database.pck' % md['output_data'],'wb'),pickle.HIGHEST_PROTOCOL)
  del output
  gc.collect()
 
@@ -683,8 +683,10 @@ def Correct_Mask(cdb,workspace,metadata,icatch,log,eares):
  #0.5 Copy original mask
  os.system('cp %s %s' % ('%s/mask_latlon.tif' % workspace,'%s/mask_org_latlon.tif' % workspace))
 
- #1. Read in elevation data
+ #1a. Read in elevation data
  dem = gdal_tools.read_data('%s/dem_latlon.tif' % workspace).data
+ #1b. Read in arcgis flow direction data
+ fdir_arcgis = gdal_tools.read_data('%s/fdir_latlon.tif' % workspace).data
 
  #2. Update the mask
  m2 = np.copy(mask).astype(np.bool)
@@ -694,9 +696,9 @@ def Correct_Mask(cdb,workspace,metadata,icatch,log,eares):
  m2[dem != -9999] = 1
  #Remove pits in dem
  #eares = 30.0 #meters
- demns = terrain_tools.ttf.remove_pits_planchon(dem,eares)
  #demns = terrain_tools.ttf.remove_pits_planchon(dem,eares,m2)
- #demns = dem
+ #demns = terrain_tools.ttf.remove_pits_planchon(dem,eares)
+ demns = dem
  #Calculate slope and aspect
  res_array = np.copy(demns)
  res_array[:] = eares
@@ -704,31 +706,34 @@ def Correct_Mask(cdb,workspace,metadata,icatch,log,eares):
  slope = np.flipud(slope)
  aspect = np.flipud(aspect)
  #Calculate accumulation area
- (area,fdir) = terrain_tools.ttf.calculate_d8_acc(demns,m2,eares)
+ fdir = terrain_tools.transform_arcgis_fdir(fdir_arcgis)
+ area = terrain_tools.ttf.calculate_d8_acc_pfdir(demns,m2,eares,fdir)
+ #(area,fdir) = terrain_tools.ttf.calculate_d8_acc(demns,m2,eares)
  #Calculate channel initiation points (2 parameters)
  C = area/eares*slope**2
  #ipoints = ((C > 100) & (area > 10**5)).astype(np.int32)
- ipoints = ((C > 100) & (area > 10**4)).astype(np.int32)
+ ipoints = ((area > 10**5)).astype(np.int32)
+ #ipoints = ((C > 100) & (area > 10**4)).astype(np.int32)
+ #ipoints = ((C > 50) & (area > 10**4)).astype(np.int32)
+ #ipoints = ((C > 25) & (area > 10**4)).astype(np.int32)
+ #ipoints = (C > 100).astype(np.int32)
  ipoints[ipoints == 0] = -9999
  #Create area for channel delineation
- (ac,fdc) = terrain_tools.ttf.calculate_d8_acc_wipoints(demns,m2,ipoints,eares)
+ ac = terrain_tools.ttf.calculate_d8_acc_wipoints_pfdir(demns,m2,ipoints,eares,fdir)
+ fdc = fdir
  ac[ac != 0] = area[ac != 0]
  #ac[(ac != 0) & (m2 == 1)] = area[(ac != 0) & (m2 == 1)]
  #Compute the channels
- (channels,channels_wob,channel_topology,shreve_order) = terrain_tools.ttf.calculate_channels_wocean_wprop(ac,10**4,10**4,fdc,m2)
+ #(channels,channels_wob,channel_topology) = terrain_tools.ttf.calculate_channels_wocean_wprop(ac,10**4,10**4,fdc,m2)
+ (channels,channels_wob,channel_topology,shreve_order) = terrain_tools.ttf.calculate_channels_wocean_wprop(ac,10**5,10**5,fdc,m2)
  #channels_wob = terrain_tools.ttf.calculate_channels(ac,10**4,10**4,fdc)
  #Compute the basins
  #basins = terrain_tools.ttf.delineate_basins(channels,m2,fdir)
  basins = terrain_tools.ttf.delineate_basins(channels_wob,m2,fdc)
  basins[basins == 0] = -9999
- '''import matplotlib.pyplot as plt
- tmp = np.ma.masked_array(basins,basins==-9999)
- tmp = np.ma.masked_array(C,C<0)
- plt.imshow(np.log10(tmp))
- tmp = np.ma.masked_array(channels_wob,channels_wob<=0)
- tmp[tmp >1] = 1#np.max(basins)
- plt.imshow(tmp,cmap=plt.get_cmap('binary'))
- plt.show()'''
+ tmp = gdal_tools.read_data('%s/mask_latlon.tif' % workspace)
+ tmp.data = basins.astype(np.float32)
+ tmp.write_data('%s/basins_latlon.tif' % workspace)
  #exit()
  #Determine the basins that have the majority in the given area
  #0.Match up with dem
@@ -765,7 +770,9 @@ def Correct_Mask(cdb,workspace,metadata,icatch,log,eares):
    #if (r != -9999):count[r,b-1] += 1
    count[r,b-1] += 1
  #If channel count in cell is 0, then remove from being a candidate
- count[channel_count == 0] = 0
+ #print(workspace,np.sum(count[count > 0]))
+ #count[channel_count == 0] = 0 #HERE
+ #print(workspace,np.sum(count[count > 0]))
  #If part of basin is outside of domain, then remove from being a candidate basin
  #count[:,basin_external == 0] = 0
  #tmp = np.sum(channel_count,axis=0)
@@ -814,31 +821,42 @@ def Terrain_Analysis(cdb,workspace,metadata,icatch,log):
  maxy = md['maxy']
  res = abs(md['resx'])
  dem_region = metadata['dem']
+ acc_region = metadata['acc']
+ fdir_region = metadata['fdir']
  #acc_region = metadata['acc']
  lproj = md['proj4']
 
  #1. Cutout the region of interest
  dem_latlon_file = '%s/dem_latlon.tif' % workspace
+ acc_latlon_file = '%s/acc_latlon.tif' % workspace
+ fdir_latlon_file = '%s/fdir_latlon.tif' % workspace
  cache = int(psutil.virtual_memory().available*0.7/mb)
  #os.system('gdalwarp -t_srs \'%s\' -dstnodata -9999.0 -r bilinear -tr %.16f %.16f -te %.16f %.16f %.16f %.16f --config GDAL_CACHEMAX %i  %s %s >> %s 2>&1' % (lproj,res,res,minx,miny,maxx,maxy,cache,dem_region,dem_latlon_file,log))
  os.system('gdalwarp -t_srs \'%s\' -dstnodata -9999.0 -te %.16f %.16f %.16f %.16f --config GDAL_CACHEMAX %i  %s %s >> %s 2>&1' % (lproj,minx,miny,maxx,maxy,cache,dem_region,dem_latlon_file,log))
+ os.system('gdalwarp -t_srs \'%s\' -dstnodata -9999.0 -te %.16f %.16f %.16f %.16f --config GDAL_CACHEMAX %i  %s %s >> %s 2>&1' % (lproj,minx,miny,maxx,maxy,cache,acc_region,acc_latlon_file,log))
+ os.system('gdalwarp -t_srs \'%s\' -dstnodata -9999.0 -te %.16f %.16f %.16f %.16f --config GDAL_CACHEMAX %i  %s %s >> %s 2>&1' % (lproj,minx,miny,maxx,maxy,cache,fdir_region,fdir_latlon_file,log))
 
  #1. Cutout the region of interest
  #acc_latlon_file = '%s/acc_latlon.tif' % workspace
  #os.system('gdalwarp -t_srs \'%s\' -dstnodata -9999.0 -te %.16f %.16f %.16f %.16f --config GDAL_CACHEMAX %i  %s %s >> %s 2>&1' % (lproj,minx,miny,maxx,maxy,cache,acc_region,acc_latlon_file,log))
 
  data = gdal_tools.read_raster(dem_latlon_file)
- #import matplotlib.pyplot as plt
- #eares = 30.0 #meters
- #mask = np.copy(data).astype(np.bool)
- #mask[:] = 1
- #(area,fdir) = terrain_tools.ttf.calculate_d8_acc(data,mask,eares)
- #plt.imshow(np.log(area))
- #plt.show()
  metadata = gdal_tools.retrieve_metadata(dem_latlon_file)
  metadata['nodata'] = -9999.0
  data[data == -32768] = -9999.0
  gdal_tools.write_raster(dem_latlon_file,metadata,data)
+
+ data = gdal_tools.read_raster(acc_latlon_file)
+ metadata = gdal_tools.retrieve_metadata(acc_latlon_file)
+ metadata['nodata'] = -9999.0
+ #data[data == -32768] = -9999.0
+ gdal_tools.write_raster(acc_latlon_file,metadata,data)
+
+ data = gdal_tools.read_raster(fdir_latlon_file)
+ metadata = gdal_tools.retrieve_metadata(fdir_latlon_file)
+ metadata['nodata'] = -9999.0
+ #data[data == -32768] = -9999.0
+ gdal_tools.write_raster(fdir_latlon_file,metadata,data)
 
  mask = gdal_tools.read_raster('%s/mask_latlon.tif' % workspace)
  m2 = ( mask >= 0 ) & ( data != -9999.0)
@@ -1781,8 +1799,9 @@ def Extract_Water_Use(cdb,workspace,metadata,icatch,log):
 def prepare_input_data(cdir,cdb,metadata,rank,icatch,eares):
  
  #Create the workspace
- workspace = '%s/workspace' % cdir
- os.system('mkdir -p %s' % workspace)
+ #workspace = '%s/workspace' % cdir
+ workspace = cdir
+ #os.system('mkdir -p %s' % workspace)
 
  #Define the log
  log = '%s/log.txt' % workspace
@@ -1824,7 +1843,6 @@ def prepare_input_data(cdir,cdb,metadata,rank,icatch,eares):
  #Create soil product
  print(rank,'Preparing the soil data',time.ctime(),icatch,flush=True)
  Extract_Soils(cdb,workspace,metadata,icatch,log)
- #exit()
 
  #Create depth to bedrock product
  print(rank,'Preparing the depth to the bedrock',time.ctime(),icatch,flush=True)

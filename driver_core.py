@@ -9,7 +9,6 @@ from mpi4py import MPI
 comm = MPI.COMM_WORLD
 size = comm.Get_size()
 rank = comm.Get_rank()
-print('here',flush=True)
 #name = MPI.Get_processor_name()
 #rank = 0#12
 #size = 1
@@ -25,7 +24,7 @@ pre_metadata_file = sys.argv[1]
 pre_metadata = json.load(open(pre_metadata_file))
 
 #Read in the catchment summary database
-pck_file = '%s/domain/domain_database.pck' % pre_metadata['output_data']
+pck_file = '%s/cids/domain_database.pck' % pre_metadata['output_data']
 cdb = pickle.load(open(pck_file,'rb'))
 crange = range(len(cdb))
 
@@ -37,7 +36,7 @@ for ic in crange[rank::size]:
  #cid = 1
 
  #Define the catchment directory
- cdir = '%s/domain/%d' % (pre_metadata['output_data'],cid)
+ cdir = '%s/cids/%d' % (pre_metadata['output_data'],cid)
 
  # Update Metadata
  '''metadata['Preprocessing']['cid'] = str(cid)
