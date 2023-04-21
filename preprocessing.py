@@ -25,6 +25,8 @@ import gc
 #import sparse
 from scipy.sparse import csr_matrix, csc_matrix, find, hstack
 import psutil
+import rasterio
+import fiona
 mb = 1024*1024
 
 def Create_Other_Soil_Properties_Soilgrids_Texture(cdb,workspace,metadata,icatch,log,properties):
@@ -593,7 +595,7 @@ def summarize_domain_decompisition(md):
 
  #Prepare the domain directory
  cdir = '%s/cids' % md['output_data']
- os.system('rm -rf %s' % cdir)
+ #os.system('rm -rf %s' % cdir)
  os.system('mkdir -p %s' % cdir)
 
  #Extract the region of interest
@@ -642,10 +644,7 @@ def Create_Mask(cdb,workspace,metadata,icatch,log):
  tmp_file = '%s/tmp.tif' % workspace
  
  #Rasterize the area
- #buff = 0.2*np.min(np.abs([bbox['maxlat']-bbox['minlat'],bbox['maxlon']-bbox['minlon']]))
- #if buff > 0.1: buff=0.1 
- #if buff < 0.7: buff=0.07
- buff = 0.1#0.25
+ buff = 0.1
  
  print(' buffer size:',buff,' icatch:',ci,flush=True) 
  minx = bbox['minlon']-buff
@@ -672,7 +671,7 @@ def Create_Mask(cdb,workspace,metadata,icatch,log):
 
  return
 
-def Correct_Mask(cdb,workspace,metadata,icatch,log,eares):
+def Correct_Mask(cdb,workspace,metadata,icatch,log):
 
  bbox =  cdb['bbox']
  res_latlon = metadata['res_latlon']
@@ -681,25 +680,26 @@ def Correct_Mask(cdb,workspace,metadata,icatch,log,eares):
  mask = gdal_tools.read_data('%s/mask_latlon.tif' % workspace).data
  mask_org = np.copy(mask)
 
+ #0.25 Read admin boundaries
+ admin = gdal_tools.read_data('%s/admin_latlon.tif' % workspace).data
+
  #0.5 Copy original mask
  os.system('cp %s %s' % ('%s/mask_latlon.tif' % workspace,'%s/mask_org_latlon.tif' % workspace))
 
  #1a. Read in elevation data
  dem = gdal_tools.read_data('%s/dem_latlon.tif' % workspace).data
+
  #1b. Read in arcgis flow direction data
  fdir_arcgis = gdal_tools.read_data('%s/fdir_latlon.tif' % workspace).data
 
  #2. Update the mask
  m2 = np.copy(mask).astype(np.bool)
- #m2[m2 <= 0] = 0
- #m2[m2 > 0] = 1
  m2[:] = 0
  m2[dem != -9999] = 1
- #Remove pits in dem
- #eares = 30.0 #meters
- #demns = terrain_tools.ttf.remove_pits_planchon(dem,eares,m2)
- #demns = terrain_tools.ttf.remove_pits_planchon(dem,eares)
+ m2[admin <= 0] = 0
  demns = dem
+
+ eares = 90 #meter(hack)
  #Calculate slope and aspect
  res_array = np.copy(demns)
  res_array[:] = eares
@@ -713,32 +713,24 @@ def Correct_Mask(cdb,workspace,metadata,icatch,log,eares):
  #Calculate channel initiation points (2 parameters)
  C = area/eares*slope**2
  #ipoints = ((C > 100) & (area > 10**5)).astype(np.int32)
- ipoints = ((area > 10**5)).astype(np.int32)
- #ipoints = ((C > 100) & (area > 10**4)).astype(np.int32)
- #ipoints = ((C > 50) & (area > 10**4)).astype(np.int32)
- #ipoints = ((C > 25) & (area > 10**4)).astype(np.int32)
- #ipoints = (C > 100).astype(np.int32)
+ cthrs = 10**6
+ ipoints = ((area > cthrs)).astype(np.int32)
  ipoints[ipoints == 0] = -9999
  #Create area for channel delineation
  ac = terrain_tools.ttf.calculate_d8_acc_wipoints_pfdir(demns,m2,ipoints,eares,fdir)
  fdc = fdir
  ac[ac != 0] = area[ac != 0]
- #ac[(ac != 0) & (m2 == 1)] = area[(ac != 0) & (m2 == 1)]
+ 
  #Compute the channels
- #(channels,channels_wob,channel_topology) = terrain_tools.ttf.calculate_channels_wocean_wprop(ac,10**4,10**4,fdc,m2)
- (channels,channels_wob,channel_topology,shreve_order) = terrain_tools.ttf.calculate_channels_wocean_wprop(ac,10**5,10**5,fdc,m2)
- #channels_wob = terrain_tools.ttf.calculate_channels(ac,10**4,10**4,fdc)
- #Compute the basins
- #basins = terrain_tools.ttf.delineate_basins(channels,m2,fdir)
+ (channels,channels_wob,channel_topology,shreve_order) = terrain_tools.ttf.calculate_channels_wocean_wprop(ac,cthrs,cthrs,fdc,m2)
  basins = terrain_tools.ttf.delineate_basins(channels_wob,m2,fdc)
  basins[basins == 0] = -9999
  tmp = gdal_tools.read_data('%s/mask_latlon.tif' % workspace)
  tmp.data = basins.astype(np.float32)
  tmp.write_data('%s/basins_latlon.tif' % workspace)
- #exit()
  #Determine the basins that have the majority in the given area
  #0.Match up with dem
- mask[(mask == -9999) & (basins != -9999)] = np.max(mask) + 1
+ #mask[(mask == -9999) & (basins != -9999)] = np.max(mask) + 1
  mask_alt = np.copy(mask)
  #1.Compute the area of each basin in each "coarse grid cell"
  ubasins = np.unique(basins)
@@ -749,11 +741,7 @@ def Correct_Mask(cdb,workspace,metadata,icatch,log,eares):
  for uc in ucatchs:
   mask_alt[mask == uc] = i
   i += 1 
- #plt.imshow(basins)
- #plt.show()
- #count = np.zeros((ucatchs.size,ubasins.size))
  count = np.zeros((ucatchs.size,ubasins.size))
- #channel_count = np.zeros((ucatchs.size,ubasins.size))
  channel_count = np.zeros((ucatchs.size,ubasins.size))
  basin_external = np.ones(ubasins.size)
  for i in range(basins.shape[0]):
@@ -764,14 +752,9 @@ def Correct_Mask(cdb,workspace,metadata,icatch,log,eares):
     if(mask_alt[i,j] < 0):basin_external[b-1] = 0
     if r != -9999:
      if(channels_wob[i,j] > 0):channel_count[r,b-1] += 1
-    #if r == -9999:
-    # channel_count[-1,b-1] += 1
    if (b == -9999) | (r == -9999):continue
-   #if (b == -9999):continue
-   #if (r != -9999):count[r,b-1] += 1
    count[r,b-1] += 1
  #Find the basins that have the largest representation in the given cell or catchment
- #idx = np.where(ucatchs == cdb['cid'])[0][0]
  argmax = np.argmax(count,axis=0)
  #If none have a basin then set argmax to nan
  scount = np.sum(count,axis=0)
@@ -786,7 +769,7 @@ def Correct_Mask(cdb,workspace,metadata,icatch,log,eares):
    if argmax[b-1] == -9999:continue
    mask_v2[i,j] = ucatchs[argmax[b-1]]
  #Set the external to -9999
- mask_v2[mask_v2 == np.max(mask_v2)] = -9999
+ #mask_v2[mask_v2 == np.max(mask_v2)] = -9999
  #Output the data
  mask = gdal_tools.read_data('%s/mask_latlon.tif' % workspace)
  mask.data = mask_v2
@@ -1169,6 +1152,7 @@ def Extract_Soils(cdb,workspace,metadata,icatch,log):
 
  # SOILGRIDS
  if (metadata['soil_database'] == 'soilgrids') | (metadata['soil_database'] == 'soilgrids_texture'):
+  print(metadata['soil_database'])
   vars = ['clay','sand','silt','om']
   shuffle(vars)
   properties = {}
@@ -1747,7 +1731,7 @@ def Extract_Water_Use(cdb,workspace,metadata,icatch,log):
 
  return
 
-def prepare_input_data(cdir,cdb,metadata,rank,icatch,eares):
+def prepare_input_data(cdir,cdb,metadata,rank,icatch):
  
  #Create the workspace
  #workspace = '%s/workspace' % cdir
@@ -1761,6 +1745,10 @@ def prepare_input_data(cdir,cdb,metadata,rank,icatch,eares):
  print(rank,'Preparing catchment mask',time.ctime(),icatch,flush=True)
  Create_Mask(cdb,workspace,metadata,icatch,log)
 
+ #Create the administrative boundaries map
+ print(rank,'Preparing administrative boundaries mask',time.ctime(),icatch,flush=True)
+ Create_Administrative_Boundaries(cdb,workspace,metadata,icatch,log)
+
  #Terrain analysis
  print(rank,'Preparing dem products',time.ctime(),icatch,flush=True)
  Terrain_Analysis(cdb,workspace,metadata,icatch,log)
@@ -1768,7 +1756,7 @@ def prepare_input_data(cdir,cdb,metadata,rank,icatch,eares):
 
  #Correct the mask
  print(rank,'Correcting catchment mask',time.ctime(),icatch,flush=True)
- Correct_Mask(cdb,workspace,metadata,icatch,log,eares)
+ Correct_Mask(cdb,workspace,metadata,icatch,log)
    
  #Create land cover product
  print(rank,'Preparing land cover data',time.ctime(),icatch,flush=True)
@@ -1883,5 +1871,180 @@ def flip(m, axis):
                          % (axis, m.ndim))
     return m[tuple(indexer)]
 
+def correct_domain_decomposition(comm,metadata):
+
+ size = comm.Get_size()
+ rank = comm.Get_rank()
+
+ #Read in the catchment summary database
+ pck_file = '%s/cids/domain_database.pck' % metadata['output_data']
+ cdb = pickle.load(open(pck_file,'rb'))
+ crange = range(len(cdb))
+ odb = {}
+ for ic in crange[rank::size]:
+
+  print("Rank:%d, Catchment:%s - Initializing" % (rank,ic),flush=True)
+
+  cid = cdb[ic]['cid']
+
+  #Define the catchment directory
+  cdir = '%s/cids/%d' % (metadata['output_data'],cid)
+  workspace = cdir
+
+  #Define the log
+  log = '%s/log.txt' % cdir
+
+  #Prepare the workspace for the sub-domain
+  os.system('rm -rf %s' % cdir)
+  os.system('mkdir -p %s' % cdir)
+  #Create the mask
+  print(rank,'Preparing catchment mask',time.ctime(),cid,flush=True)
+  Create_Mask(cdb[ic],cdir,metadata,cid,log)
+
+  print(rank,'Preparing administrative boundaries mask',time.ctime(),cid,flush=True)
+  Create_Administrative_Boundaries(cdb[ic],workspace,metadata,cid,log)
+
+  #Terrain analysis
+  print(rank,'Preparing dem products',time.ctime(),cid,flush=True)
+  Terrain_Analysis(cdb[ic],cdir,metadata,cid,log)
+
+  #Correct the mask
+  print(rank,'Correcting catchment mask',time.ctime(),cid,flush=True)
+  Correct_Mask(cdb[ic],cdir,metadata,cid,log)
+
+  #Create land cover product
+  print(rank,'Preparing land cover data',time.ctime(),cid,flush=True)
+  Extract_Land_Cover(cdb[ic],cdir,metadata,cid,log)
+
+  #Create soil product
+  print(rank,'Preparing the soil data',time.ctime(),cid,flush=True)
+  Extract_Soils(cdb[ic],cdir,metadata,cid,log)
+
+  #Create meteo file
+  file_in = '/home/nc153/soteria/data/PCF/1hr/tair.tif'
+  md = gdal_tools.retrieve_metadata('%s/mask_latlon.tif' % cdir)
+  minx = md['minx']
+  miny = md['miny']
+  maxx = md['maxx']
+  maxy = md['maxy']
+  res = abs(md['resx'])
+  lproj = md['proj4']
+  file_out = '%s/meteo_latlon.tif' % cdir
+  cache = int(psutil.virtual_memory().available*0.7/mb)
+  os.system('gdalwarp -t_srs \'%s\' -dstnodata -9999 -r bilinear -tr %.16f %.16f -te %.16f %.16f %.16f %.16f --config GDAL_CACHEMAX %i %s %s >> %s 2>&1' % (lproj,res,res,minx,miny,maxx,maxy,cache,file_in,file_out,log))
+
+  #Determine number of pixels
+  file = '%s/mask_latlon.tif' % workspace
+  mask = rasterio.open(file).read(1)
+  file = '%s/sand_latlon.tif' % workspace
+  sand = rasterio.open(file).read(1)
+  file = '%s/meteo_latlon.tif' % workspace
+  meteo = rasterio.open(file).read(1)
+  file = '%s/lc_latlon.tif' % workspace
+  lc = rasterio.open(file).read(1)
+  npx_mask = np.sum(mask == cid)
+  npx_sand = np.sum(sand != -9999)
+  npx_meteo = np.sum(meteo != -9999)
+  npx_lc = np.sum(lc != -9999)
+  odb[cid] = min(npx_mask,npx_sand,npx_meteo,npx_lc)
+  print(npx_mask,npx_sand,npx_meteo,npx_lc)
+
+ #Broadcast and collect
+ if rank == 0:
+   print(rank,'Cleaning up cid map',time.ctime(),flush=True)
+   for i in range(1,size):
+    odb2 = comm.recv(source=i, tag=11)
+    for key in odb2:odb[key] = odb2[key]
+ else:
+    comm.send(odb,dest=0, tag=11)
+
+ #Create new shapefile and summary
+ if rank == 0:
+  odb2 = {}
+  count = 1
+  for key in odb:
+   #if odb[key] > 0:
+   if odb[key] > 250:#Minimum number of valid pixels in the cid of the domain to count
+    odb2[key] = count
+    count += 1
+    
+  odb = odb2
+  dfile = '%s/shp/domain.shp' % metadata['output_data']
+  dfile2 = '%s/shp/domain2.shp' % metadata['output_data']
+  fp = fiona.open(dfile,'r')
+  fp2 = fiona.open(dfile2,'w',crs=fp.crs,driver='ESRI Shapefile',schema=fp.schema)
+  for poly in fp.values():
+   ID = poly['properties']['ID']
+   if ID in odb:
+    poly['id'] = odb[ID]-1
+    poly['properties']['ID'] = odb[ID]
+    fp2.write(poly)
+  fp.close()
+  fp2.close()
+  mdir = metadata['output_data']
+  gdir = '%s/general' % metadata['dir']
+  os.system('mv %s/shp/domain2.shp %s/shp/domain.shp' % (mdir,gdir))
+  os.system('mv %s/shp/domain2.shx %s/shp/domain.shx' % (mdir,gdir))
+  os.system('mv %s/shp/domain2.prj %s/shp/domain.prj' % (mdir,gdir))
+  os.system('mv %s/shp/domain2.cpg %s/shp/domain.cpg' % (mdir,gdir))
+  os.system('mv %s/shp/domain2.dbf %s/shp/domain.dbf' % (mdir,gdir))
+  #perform new summary
+  summarize_domain_decompisition(metadata)
+
+ #Wait until rank 0 completes
+ comm.Barrier()
+
+ #Remove all cdir
+ for ic in crange[rank::size]:
+
+  cid = cdb[ic]['cid']
+
+  #Define the catchment directory
+  cdir = '%s/cids/%d' % (metadata['output_data'],cid)
+  os.system('rm -rf %s' % cdir)
+
+ comm.Barrier()
+
+ return
+
+def Create_Administrative_Boundaries(cdb,workspace,metadata,icatch,log):
+
+ #Define parameters
+ shp_in = '/home/nc153/soteria/data/USCENSUS/cb_2018_us_state_500k.shp'#'%s/shp' % metadata['output_data']
+ shp_out = '%s/admin_shp' % workspace
+ ci = cdb['cid']
+ bbox =  cdb['bbox']
+ res_latlon = metadata['res_latlon']
+ 
+ #Define the files
+ admin_latlon_file = '%s/admin_latlon.tif' % workspace
+ tmp_file = '%s/tmp.tif' % workspace
+ 
+ #Rasterize the area
+ buff = 0.1
+ 
+ print(' buffer size:',buff,' icatch:',ci,flush=True) 
+ minx = bbox['minlon']-buff
+ miny = bbox['minlat']-buff
+ maxx = bbox['maxlon']+buff
+ maxy = bbox['maxlat']+buff
+ cache = int(psutil.virtual_memory().available*0.7/mb)
+
+ #Correct coordinates to avoid reprojections
+ #Fix coordinates to the dem vrt to avoid inconsistiences
+ md = gdal_tools.retrieve_metadata(metadata['dem'])
+ res_latlon = np.abs(md['resx'])
+ minx = md['minx'] + np.floor((minx-md['minx'])/res_latlon)*res_latlon
+ miny = md['miny'] + np.floor((miny-md['miny'])/res_latlon)*res_latlon#np.floor(miny/res_latlon)*res_latlon
+ maxx = md['minx'] + np.ceil((maxx-md['minx'])/res_latlon)*res_latlon
+ maxy = md['miny'] + np.ceil((maxy-md['miny'])/res_latlon)*res_latlon
+
+ #Rasterize
+ os.system("gdal_rasterize -at -ot Float64 --config GDAL_CACHEMAX %i -a_nodata -9999 -init -9999 -tr %.16f %.16f -te %.16f %.16f %.16f %.16f -burn 1 %s %s >> %s 2>&1" % (cache, res_latlon,res_latlon,minx,miny,maxx,maxy,shp_in,admin_latlon_file,log))
+
+ #del data
+ gc.collect()
+
+ return
 
 
