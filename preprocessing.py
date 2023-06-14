@@ -6,6 +6,7 @@ import pickle
 import numpy as np
 #import matplotlib.pyplot as plt
 import sys
+import glob
 sys.stdout.flush()
 
 import geospatialtools.pedotransfer as pedotransfer
@@ -422,15 +423,184 @@ def Create_Other_Soil_Properties(cdb,workspace,metadata,icatch,log,properties):
    return
    
  #Output data
- md = gdal_tools.retrieve_metadata('%s/sand_latlon.tif' % workspace)
- md['nodata'] = -9999.0
- for var in output:
-  file = '%s/%s_latlon.tif' % (workspace,var)
-  gdal_tools.write_raster(file,md,output[var])
+ if metadata['svp']==False:
+  md = gdal_tools.retrieve_metadata('%s/sand/sand_latlon.tif' % workspace)#laura, svp
+  md['nodata'] = -9999.0
+  for var in output:
+   file = '%s/%s_latlon.tif' % (workspace,var)
+   gdal_tools.write_raster(file,md,output[var])
+ else:
+  md = gdal_tools.retrieve_metadata('%s/sand/sand_latlon_%scm.tif' % (workspace,layer))
+  md['nodata'] = -9999.0
+  for var in output:
+   if var=='f11':
+    file = '%s/%s_latlon.tif' % (workspace,var)
+    gdal_tools.write_raster(file,md,output[var])
+   else:
+    if var in ['bb','dsat','qtz','theta1500','theta33','texture_class','psisat','ksat','thetar','thetas']:
+     if os.path.isdir('%s/%s' %(workspace,var))==False:
+      os.system('mkdir %s/%s' %(workspace,var))
+     file_out='%s/%s/%s_latlon_%scm.tif' % (workspace,var,var,layer)
+     gdal_tools.write_raster(file_out,md,output[var][layer])
 
  del output
  gc.collect()
  return
+
+def Create_Other_Soil_Properties_svp(cdb,workspace,metadata,icatch,log,properties):
+ 
+ for layer in properties['sand']:
+  #Set the input properties
+  S = properties['sand'][layer] #%w
+  C = properties['clay'][layer] #%w
+  ST = properties['silt'][layer] #%w
+  OM = properties['om'][layer] #%w 
+  from numpy import inf 
+  badvals = (S == -9999.0) | (C == -9999.0) | (ST == -9999.0) | (OM == -9999.0) | np.isnan(S) 
+
+ # Saxton pedotransfers limited to OM < 8%w and clay <60%
+ #OM[OM > 8.0] = 8.0
+ #C[C > 60.0] = 60.0
+ 
+  output  = {}
+
+  if metadata['soil_database'] == 'soilgrids':
+   #Theta saturated
+   output['thetas'] = pedotransfer.ThetaS_Saxton2006(S/100,C/100,OM/100)
+
+   #Theta residual
+   output['thetar'] = pedotransfer.Residual_Water_Content_Maidment92(output['thetas'],C,S)
+
+   #Ksat
+   output['ksat'] = pedotransfer.Ksat_Saxton2006(S/100,C/100,OM/100) # mm/h
+
+   #Bb -- Brooks and Correy parameter lamba to the distribution of pore sizes  b = 1/lambda
+   output['bb'] = 1.0/pedotransfer.Lambda_Maidment92(output['thetas'],C,S)
+
+   #Bubble pressure
+   output['psisat'] = pedotransfer.Bubbling_Pressure_Maidment92(output['thetas'],C,S)/100.0 # cm -> m
+
+   #Theta33
+   output['theta33'] = pedotransfer.Theta_33_Saxton2006(S/100,C/100,OM/100)
+
+   #Theta1500
+   output['theta1500'] = pedotransfer.Theta_1500_Saxton2006(S/100,C/100,OM/100)
+
+  if metadata['soil_database'] == 'polaris':
+    #Theta saturated
+    output['thetas']={}
+    output['thetas'][layer] = properties['thetas'][layer]
+
+    #Theta residual
+    output['thetar']={}
+    output['thetar'][layer] = properties['thetar'][layer]
+
+    #Ksat
+    output['ksat']={}
+    output['ksat'][layer] = properties['ksat'][layer] * 10  # cm/h --> mm/h
+
+    #Theta33  (1kPa ~ 10.197 cm H20)
+    output['theta33']={}
+    output['theta33'][layer] = np.float32(np.power(properties['hb'][layer]/33,properties['lambda'][layer])*(output['thetas'][layer]-output['thetar'][layer])+output['thetar'][layer])
+
+    #Theta1500
+    output['theta1500']={}
+    output['theta1500'][layer] = np.power(properties['hb'][layer]/1500,properties['lambda'][layer])*(output['thetas'][layer]-output['thetar'][layer])+output['thetar'][layer]
+
+    #Convert BC parameters to Campbell
+    lamda_campbell = (np.log(output['theta33'][layer])-np.log(output['theta1500'][layer]))/(np.log(15000)-np.log(330))
+    psisat_campbell = (output['theta1500'][layer]/output['thetas'][layer])**(1/lamda_campbell)*15000
+
+    #Bb -- Brooks and Corey parameter lamba to the distribution of pore sizes  b = 1/lambda
+    #output['bb'] = 1.0/properties['lambda']
+    output['bb']={}
+    output['bb'][layer] = 1.0/lamda_campbell
+   
+    #Bubble pressure
+    #output['psisat'] = properties['hb']/100.0 # cm --> m
+    output['psisat']={}
+    output['psisat'][layer] = psisat_campbell/100.0 # cm --> m
+ 
+  #SATDW (satdw = bb*satdk*satpsi/maxsmc)
+  output['dsat']={}
+  output['dsat'][layer] = output['bb'][layer]*output['ksat'][layer]*output['psisat'][layer]/output['thetas'][layer] # mm2/h
+
+ #F11 (f11 = log10(satpsi) + bb*log10(maxsmc) + 2.0)
+ #output['f11'] = np.log10(output['psisat']) + output['bb']*np.log10(output['thetas']) + 2.0
+  output['f11'] = np.copy(output['psisat'][layer])
+  output['f11'][:] = -9999.0
+
+ #QTZ (qtz)
+ #output['qtz'] = np.copy(output['f11'])
+ #output['qtz'][:] = 0.4
+
+  S = properties['sand'][layer] #%w
+  C = properties['clay'][layer] #%w
+  ST = properties['silt'][layer] #%w
+  OM = properties['om'][layer] #%w
+ 
+  #Soil Texture
+  #print C, ST, S, OM
+  output['texture_class']={}
+  output['texture_class'][layer] = np.ones(C.shape)*(-9999.0)
+  output['texture_class'][layer][~badvals] = Texture_Class(C[~badvals],ST[~badvals],S[~badvals],OM[~badvals])
+
+  #QTZ (qtz)
+  #From NOAH-LSM look-up table
+  output['qtz']={}
+  output['qtz'][layer] = np.copy(output['psisat'][layer])
+  output['qtz'][layer][output['texture_class'] == 1] = 0.92
+  output['qtz'][layer][output['texture_class'] == 2] = 0.82
+  output['qtz'][layer][output['texture_class'] == 3] = 0.60
+  output['qtz'][layer][output['texture_class'] == 4] = 0.25
+  output['qtz'][layer][output['texture_class'] == 5] = 0.10
+  output['qtz'][layer][output['texture_class'] == 6] = 0.40
+  output['qtz'][layer][output['texture_class'] == 7] = 0.60
+  output['qtz'][layer][output['texture_class'] == 8] = 0.10
+  output['qtz'][layer][output['texture_class'] == 9] = 0.35
+  output['qtz'][layer][output['texture_class'] == 10] = 0.52
+  output['qtz'][layer][output['texture_class'] == 11] = 0.10
+  output['qtz'][layer][output['texture_class'] == 12] = 0.25
+  
+  mask = gdal_tools.read_raster('%s/mask_latlon.tif' % workspace)
+
+  badvals2 = (output['texture_class'][layer] < 0) | (np.isnan(output['f11'])) | badvals
+  for var in output:
+   if var=='f11':
+    output[var][badvals2]=-9999.0
+    m2 = ( mask >= 0 ) & np.invert(badvals2)
+    missing_ratio = 1.0 - np.sum(m2)/float(np.sum(mask >= 0))
+    if missing_ratio > 0.95:
+     import sys
+     sys.stderr.write('Error_preprocessing: %s_full_of_nans %s\n' % (var,icatch))
+     return
+   else:
+    output[var][layer][badvals2]=-9999.0
+    m2= (mask >= 0 ) & np.invert(badvals2)
+    missing_ratio = 1.0 - np.sum(m2)/float(np.sum(mask >= 0))
+    if missing_ratio > 0.95:
+     import sys
+     sys.stderr.write('Error_preprocessing: %s_full_of_nans %s\n' % (var,icatch))
+     return
+   
+ #Output data
+  md = gdal_tools.retrieve_metadata('%s/sand/sand_latlon_%scm.tif' % (workspace,layer))
+  md['nodata'] = -9999.0
+  for var in output:
+   if var=='f11':
+    file = '%s/%s_latlon.tif' % (workspace,var)
+    gdal_tools.write_raster(file,md,output[var])
+   else:
+    if var in ['bb','dsat','qtz','theta1500','theta33','texture_class','psisat','ksat','thetar','thetas']:
+     if os.path.isdir('%s/%s' %(workspace,var))==False:
+      os.system('mkdir %s/%s' %(workspace,var))
+     file_out='%s/%s/%s_latlon_%scm.tif' % (workspace,var,var,layer)
+     gdal_tools.write_raster(file_out,md,output[var][layer])
+
+ del output
+ gc.collect()
+ return
+
 
 def Texture_Class(clay,silt,sand,om):
  
@@ -713,7 +883,7 @@ def Correct_Mask(cdb,workspace,metadata,icatch,log):
  #Calculate channel initiation points (2 parameters)
  C = area/eares*slope**2
  #ipoints = ((C > 100) & (area > 10**5)).astype(np.int32)
- cthrs = 10**6
+ cthrs = metadata['channel_initiation']["athrs"]#Laura #10**6
  ipoints = ((area > cthrs)).astype(np.int32)
  ipoints[ipoints == 0] = -9999
  #Create area for channel delineation
@@ -1177,40 +1347,97 @@ def Extract_Soils(cdb,workspace,metadata,icatch,log):
  # POLARIS
  if (metadata['soil_database'] == 'polaris') | (metadata['soil_database'] == 'polaris_texture'):
   vars = ['clay','sand','silt','om','hb','thetar','thetas','ksat','lambda']
-  shuffle(vars)
-  properties = {}
-  for var in vars:
-   file_in = metadata['soil'][var]
-   file_out = '%s/%s_latlon.tif' % (workspace,var)
-   cache = int(psutil.virtual_memory().available*0.7/mb)
+  #shuffle(vars)
+  if metadata['svp']==False: #laura
+   properties = {}
+   for var in vars:
+    if var not in ['thetar','thetas']:
+     file_in = metadata['soil'][var]+'%s_mean_0_5.vrt'%var
+    else:
+     if var=='thetar':
+      file_in = metadata['soil'][var]+'theta_r_mean_0_5.vrt'
+     elif var=='thetas':
+      file_in = metadata['soil'][var]+'theta_s_mean_0_5.vrt'
+    if os.path.exists('%s/%s'%(workspace,var))==False: #laura
+     os.system('mkdir %s/%s' %(workspace,var)) #laura
+    file_out = '%s/%s/%s_latlon.tif' % (workspace,var,var) #laura
+    cache = int(psutil.virtual_memory().available*0.7/mb)
    
-   os.system('gdalwarp -t_srs \'%s\' -dstnodata -9999 -r bilinear -tr %.16f %.16f -te %.16f %.16f %.16f %.16f --config GDAL_CACHEMAX %i %s %s >> %s 2>&1' % (lproj,res,res,minx,miny,maxx,maxy,cache,file_in,file_out,log))
+    os.system('gdalwarp -t_srs \'%s\' -dstnodata -9999 -r bilinear -tr %.16f %.16f -te %.16f %.16f %.16f %.16f --config GDAL_CACHEMAX %i %s %s >> %s 2>&1' % (lproj,res,res,minx,miny,maxx,maxy,cache,file_in,file_out,log))
   
-   #Get the data 
-   properties[var] = gdal_tools.read_raster(file_out)
-   if var in ['om','ksat','hb']:
+    #Get the data 
+    properties[var] = gdal_tools.read_raster(file_out)
+    if var in ['om','ksat','hb']:
      badvals = (properties[var] == -9999.0)
      properties[var] = np.power(10.,properties[var]) 
      properties[var][badvals] = -9999.0
-   
+
+  else: #laura, svp
+   properties = {}
+   for var in vars:
+    dir_in=metadata['soil'][var]
+    if var in ['thetas','thetar']:
+     layers=glob.glob(dir_in+'theta_%s_mean*' %var.split('a')[1])
+    else:
+     layers=glob.glob(dir_in+'%s_mean*' %var)
+    i=0
+    for lay in layers:
+     file_in=lay
+     avrgd=(float(lay.split('mean_')[1].split('.vrt')[0].split('_')[0])+float(lay.split('mean_')[1].split('.vrt')[0].split('_')[1]))/2
+     if i==0:
+      os.system('mkdir %s/%s' %(workspace,var))
+      properties[var]={}
+     i=i+1
+     file_out='%s/%s/%s_latlon_%scm.tif' % (workspace,var,var,avrgd)
+     cache=int(psutil.virtual_memory().available*0.7/mb)
+     os.system('gdalwarp -t_srs \'%s\' -dstnodata -9999 -r bilinear -tr %.16f %.16f -te %.16f %.16f %.16f %.16f --config GDAL_CACHEMAX %i %s %s >> %s 2>&1' % (lproj,res,res,minx,miny,maxx,maxy,cache,file_in,file_out,log))
+     properties[var][str(avrgd)] = gdal_tools.read_raster(file_out)
+     if var in ['om','ksat','hb']:
+      badvals = (properties[var][str(avrgd)] == -9999.0)
+      properties[var][str(avrgd)] = np.power(10.,properties[var][str(avrgd)])
+      properties[var][str(avrgd)][badvals] = -9999.0
+      #end svp block here, laura
+
  # Write out the data
  mask = gdal_tools.read_raster('%s/mask_latlon.tif' % workspace)
  if metadata['soil_database'] != 'conus-soil':
-  badvals = ((properties['clay']==-9999.0) | (properties['sand']==-9999.0)) | ((properties['silt']==-9999.0) | (properties['om']==-9999.0)) 
-  for var in ['clay','sand','silt','om']:
-   file_out = '%s/%s_latlon.tif' % (workspace,var)
-   properties[var][badvals] = -9999.0 
-   m2 = ( mask >= 0 ) & np.invert(badvals)
-   missing_ratio = 1.0 -np.sum(m2)/float(np.sum(mask >= 0))
-   if missing_ratio > 0.95 : 
-    os.system('rm -rf %s' % file_out)
-    import sys
-    sys.stderr.write('Error_preprocessing: %s_full_of_nans %s\n' % (var,icatch))
-    return
-   if var not in ['hb','lambda','thetas','thetar','ksat']:
-    md = gdal_tools.retrieve_metadata(file_out)
-    md['nodata'] = -9999.0
-    gdal_tools.write_raster(file_out,md,properties[var])
+  if metadata['svp']==False:
+   badvals = ((properties['clay']==-9999.0) | (properties['sand']==-9999.0)) | ((properties['silt']==-9999.0) | (properties['om']==-9999.0)) 
+   for var in ['clay','sand','silt','om']:
+    file_out = '%s/%s/%s_latlon.tif' % (workspace,var,var) #laura
+    properties[var][badvals] = -9999.0 
+    m2 = ( mask >= 0 ) & np.invert(badvals)
+    missing_ratio = 1.0 -np.sum(m2)/float(np.sum(mask >= 0))
+    if missing_ratio > 0.95 : 
+     os.system('rm -rf %s' % file_out)
+     import sys
+     sys.stderr.write('Error_preprocessing: %s_full_of_nans %s\n' % (var,icatch))
+     return
+    if var not in ['hb','lambda','thetas','thetar','ksat']:
+     md = gdal_tools.retrieve_metadata(file_out)
+     md['nodata'] = -9999.0
+     gdal_tools.write_raster(file_out,md,properties[var])
+  else: #laura, svp
+   for layer in properties['clay']: #laura svp
+    badvals = ((properties['clay'][layer]==-9999.0) | (properties['sand'][layer]==-9999.0)) | ((properties['silt'][layer]==-9999.0) | (properties['om'][layer]==-9999.0))
+    for var in ['clay','sand','silt','om']:
+     file_out = '%s/%s/%s_latlon_%scm.tif' % (workspace,var,var,layer) #laura svp
+     properties[var][layer][badvals] = -9999.0
+     
+     m2 = ( mask >= 0 ) & np.invert(badvals)
+     missing_ratio = 1.0 -np.sum(m2)/float(np.sum(mask >= 0))
+     if missing_ratio > 0.95 :
+      #os.system('rm -rf %s' % file_out)
+      import sys
+      sys.stderr.write('Warning_preprocessing: %s_layer_%s_full_of_nans %s\n' % (var,layer,icatch)) #laura svp
+      continue
+      #return
+     if var not in ['hb','lambda','thetas','thetar','ksat']:
+      md = gdal_tools.retrieve_metadata(file_out)
+      md['nodata'] = -9999.0
+      gdal_tools.write_raster(file_out,md,properties[var][layer]) 
+      #end block svp, laura
+
  else:
   badvals = ((properties['clay']==-9999.0) | (properties['sand']==-9999.0)) | ((properties['silt']==-9999.0))
   for var in ['clay','sand','silt']:
@@ -1235,7 +1462,10 @@ def Extract_Soils(cdb,workspace,metadata,icatch,log):
  elif metadata['soil_database'] == 'soilgrids_texture':
   Create_Other_Soil_Properties_Soilgrids_Texture(cdb,workspace,metadata,icatch,log,properties)
  else:
-  Create_Other_Soil_Properties(cdb,workspace,metadata,icatch,log,properties)
+  if metadata['svp']==False:#laura
+   Create_Other_Soil_Properties(cdb,workspace,metadata,icatch,log,properties)
+  else:
+   Create_Other_Soil_Properties_svp(cdb,workspace,metadata,icatch,log,properties) #modified function svp, laura
 
  for var in ['hb','lambda']:
    os.system('rm -rf %s/%s_latlon.tif' % (workspace,var))
@@ -1448,7 +1678,7 @@ def Extract_Meteorology_Daily(cdb,workspace,metadata,icatch,log):
   #Determine the box size
   nlon = int(np.round((maxlon - minlon)/res + 1))
   nlat = int(np.round((maxlat - minlat)/res + 1))
-
+  
   #Set the metadata
   md = {'nlat':nlat,'nlon':nlon,'minlat':minlat,'minlon':minlon,'maxlat':maxlat,'maxlon':maxlon,'res':res}
   md['undef'] = -9999.0

@@ -51,5 +51,5 @@ for ic in crange[rank::size]:
  #Prepare the workspace for the sub-domain
  os.system('rm -rf %s' % cdir)
  os.system('mkdir -p %s' % cdir)
- preprocessing.prepare_input_data(cdir,cdb[ic],pre_metadata,rank,ic,eares)
+ preprocessing.prepare_input_data(cdir,cdb[ic],pre_metadata,rank,ic)#Laura, removed eares
  #exit()
