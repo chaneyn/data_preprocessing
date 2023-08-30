@@ -8,8 +8,8 @@ import numpy as np
 import time
 
 t1 = datetime.datetime.now()
-rdir = '/stor/tyche/hydro/private/lpt14/projects/HBupdate2023/FD_test/'
-ncores = 4
+rdir = '/stor/tyche/hydro/private/lpt14/projects/routing_clustering/Fall2023/'
+ncores = 16
 
 # Read in the preprocessing metadata
 metadata_file = '%s/metadata_datapreprocess.json' % rdir
