@@ -2166,7 +2166,8 @@ def correct_domain_decomposition(comm,metadata):
   #Determine number of pixels
   file = '%s/mask_latlon.tif' % workspace
   mask = rasterio.open(file).read(1)
-  file = '%s/sand_latlon.tif' % workspace
+  if metadata['svp']==False:file = '%s/sand/sand_latlon.tif' % workspace
+  else:file = '%s/sand/sand_latlon_2.5cm.tif' % workspace
   sand = rasterio.open(file).read(1)
   file = '%s/meteo_latlon.tif' % workspace
   meteo = rasterio.open(file).read(1)
