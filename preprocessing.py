@@ -862,6 +862,9 @@ def Correct_Mask(cdb,workspace,metadata,icatch,log):
  #1b. Read in arcgis flow direction data
  fdir_arcgis = gdal_tools.read_data('%s/fdir_latlon.tif' % workspace).data
 
+ #1c. Read in accumulation area
+ acc = 10**6*gdal_tools.read_data('%s/acc_latlon.tif' % workspace).data #km2->m2
+
  #2. Update the mask
  m2 = np.copy(mask).astype(np.bool)
  m2[:] = 0
@@ -869,27 +872,28 @@ def Correct_Mask(cdb,workspace,metadata,icatch,log):
  m2[admin <= 0] = 0
  demns = dem
 
- eares = 90 #meter(hack)
+ #eares = 90 #meter(hack)
  #Calculate slope and aspect
- res_array = np.copy(demns)
- res_array[:] = eares
- (slope,aspect) = terrain_tools.ttf.calculate_slope_and_aspect(np.flipud(demns),res_array,res_array)
- slope = np.flipud(slope)
- aspect = np.flipud(aspect)
+ #res_array = np.copy(demns)
+ #res_array[:] = eares
+ #(slope,aspect) = terrain_tools.ttf.calculate_slope_and_aspect(np.flipud(demns),res_array,res_array)
+ #slope = np.flipud(slope)
+ #aspect = np.flipud(aspect)
  #Calculate accumulation area
  fdir = terrain_tools.transform_arcgis_fdir(fdir_arcgis)
- area = terrain_tools.ttf.calculate_d8_acc_pfdir(demns,m2,eares,fdir)
- #(area,fdir) = terrain_tools.ttf.calculate_d8_acc(demns,m2,eares)
+ #area = terrain_tools.ttf.calculate_d8_acc_pfdir(demns,m2,eares,fdir)
+ ##(area,fdir) = terrain_tools.ttf.calculate_d8_acc(demns,m2,eares)
  #Calculate channel initiation points (2 parameters)
- C = area/eares*slope**2
+ #C = area/eares*slope**2
  #ipoints = ((C > 100) & (area > 10**5)).astype(np.int32)
  cthrs = metadata['channel_initiation']["athrs"]#Laura #10**6
- ipoints = ((area > cthrs)).astype(np.int32)
- ipoints[ipoints == 0] = -9999
+ #ipoints = ((area > cthrs)).astype(np.int32)
+ #ipoints[ipoints == 0] = -9999
  #Create area for channel delineation
- ac = terrain_tools.ttf.calculate_d8_acc_wipoints_pfdir(demns,m2,ipoints,eares,fdir)
+ #ac = terrain_tools.ttf.calculate_d8_acc_wipoints_pfdir(demns,m2,ipoints,eares,fdir)
  fdc = fdir
- ac[ac != 0] = area[ac != 0]
+ ac = acc
+ #ac[ac != 0] = area[ac != 0]
  
  #Compute the channels
  (channels,channels_wob,channel_topology,shreve_order) = terrain_tools.ttf.calculate_channels_wocean_wprop(ac,cthrs,cthrs,fdc,m2)
@@ -2178,7 +2182,7 @@ def correct_domain_decomposition(comm,metadata):
   npx_meteo = np.sum(meteo != -9999)
   npx_lc = np.sum(lc != -9999)
   odb[cid] = min(npx_mask,npx_sand,npx_meteo,npx_lc)
-  print(npx_mask,npx_sand,npx_meteo,npx_lc)
+  print(npx_mask,npx_sand,npx_meteo,npx_lc,flush=True)
 
  #Broadcast and collect
  if rank == 0:
