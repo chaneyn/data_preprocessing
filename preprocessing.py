@@ -893,6 +893,7 @@ def Correct_Mask(cdb,workspace,metadata,icatch,log):
  #ac = terrain_tools.ttf.calculate_d8_acc_wipoints_pfdir(demns,m2,ipoints,eares,fdir)
  fdc = fdir
  ac = acc
+ ac[m2 == 0] = -9999
  #ac[ac != 0] = area[ac != 0]
  
  #Compute the channels
