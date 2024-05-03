@@ -1,4 +1,5 @@
 import warnings
+import collections
 warnings.filterwarnings('ignore')
 #import gdal
 import os
@@ -2196,13 +2197,21 @@ def correct_domain_decomposition(comm,metadata):
 
  #Create new shapefile and summary
  if rank == 0:
-  odb2 = {}
+  skeys = np.array(sorted(odb.keys()))
+  count = 1
+  odb2 = collections.OrderedDict()
+  for key in skeys:
+   if odb[key] > 250:
+    odb2[key] = count
+    count += 1
+   
+  '''odb2 = {}
   count = 1
   for key in odb:
    #if odb[key] > 0:
    if odb[key] > 250:#Minimum number of valid pixels in the cid of the domain to count
     odb2[key] = count
-    count += 1
+    count += 1'''
     
   odb = odb2
   dfile = '%s/shp/domain.shp' % metadata['output_data']
