@@ -2012,8 +2012,8 @@ def prepare_input_data(cdir,cdb,metadata,rank,icatch):
  # --> Data too coarse yet, maybe in the future.
 
  #Create irrigation map covariate for the clustering 
- print(rank,'Preparing irrigation map and crop calendar',time.ctime(),icatch,flush=True)
- Extract_Irrigation_Map(cdb,workspace,metadata,icatch,log)
+ #print(rank,'Preparing irrigation map and crop calendar',time.ctime(),icatch,flush=True)
+ #Extract_Irrigation_Map(cdb,workspace,metadata,icatch,log)
   
  #Create soil product
  print(rank,'Preparing the soil data',time.ctime(),icatch,flush=True)
